@@ -1,0 +1,1566 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>SnakeTris</title>
+<style>
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #05080a;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  position: fixed;
+  top: 0;
+  left: 0;
+}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+(() => {
+'use strict';
+
+// ============================================================
+// CONSTANTS
+// ============================================================
+const COLS_SNAKE = 20;
+const ROWS_SNAKE = 24;
+const COLS_TETRIS = 8;
+const ROWS_TETRIS = 12;
+const START_SNAKE_LEN = 4;
+const PIECES_ON_FIELD = 5;
+const DEFAULT_QUEUE_SIZE = 4;
+const TETRIS_TIME = 25;
+const SNAKE_MOVE_MS = 140;
+const GROW_PER_PIECE_NORMAL = 4;
+const GROW_PER_MISSED = 6;
+const SHRINK_PER_LINE_NORMAL = 8;
+
+const COLORS = {
+  bg: '#05080a',
+  cyan: '#35e7ff',
+  green: '#53ed9a',
+  greenHead: '#7affb8',
+  grid: 'rgba(53,231,255,0.06)',
+  ghost: 'rgba(255,255,255,0.18)',
+  white: '#ffffff',
+  dark: '#0a1014',
+  food: '#53ed9a'
+};
+
+const PIECE_COLORS = {
+  I: '#35e7ff',
+  O: '#f5e642',
+  T: '#c44dff',
+  L: '#ff8c35',
+  Z: '#ff4d6a',
+  J: '#4d7aff',
+  S: '#53ed9a'
+};
+
+const SHAPES = {
+  I: [[0,0],[1,0],[2,0],[3,0]],
+  O: [[0,0],[1,0],[0,1],[1,1]],
+  T: [[0,0],[1,0],[2,0],[1,1]],
+  L: [[0,0],[0,1],[0,2],[1,2]],
+  Z: [[0,0],[1,0],[1,1],[2,1]],
+  J: [[1,0],[1,1],[1,2],[0,2]],
+  S: [[1,0],[2,0],[0,1],[1,1]]
+};
+
+const PIECE_TYPES = ['I','O','T','L','Z'];
+
+// ============================================================
+// STATE
+// ============================================================
+const state = {
+  phase: 'start',
+  snake: [],
+  dir: {x:1,y:0},
+  nextDir: {x:1,y:0},
+  food: [],
+  fieldPieces: [],
+  queue: [],
+  snakePaused: false,
+  snakeMoveTimer: 0,
+  snakeMoveInterval: SNAKE_MOVE_MS,
+  tetrisGrid: null,
+  currentPiece: null,
+  currentRot: 0,
+  currentX: 0,
+  currentY: 0,
+  tetrisTimer: TETRIS_TIME,
+  particles: [],
+  joystick: null,
+  gameOverReason: '',
+  lastTime: 0,
+  flash: 0,
+  countdown: 0,
+  countdownTimer: 0,
+  score: 0,
+  highScore: 0,
+  settingsOpen: false,
+  settingsSnakeSpeed: SNAKE_MOVE_MS,
+  settingsQueueSize: DEFAULT_QUEUE_SIZE,
+  settingsFoodEnabled: false,
+  settingsHardMode: false
+};
+
+// ============================================================
+// CANVAS & LAYOUT
+// ============================================================
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W = 0, H = 0, dpr = 1;
+let snakeArea = {x:0,y:0,w:0,h:0,cell:0,ox:0,oy:0,cols:COLS_SNAKE,rows:ROWS_SNAKE};
+let tetrisArea = {x:0,y:0,w:0,h:0,cell:0,ox:0,oy:0};
+let queueArea = {x:0,y:0,w:0,h:0};
+let tipArea = {x:0,y:0,w:0,h:0};
+
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = Math.floor(W * dpr);
+  canvas.height = Math.floor(H * dpr);
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const snakeH = Math.floor(H * 0.58);
+  const bottomH = H - snakeH;
+  const pad = Math.max(6, Math.min(W, H) * 0.012);
+
+  const maxCellS = Math.min(
+    Math.floor(W / COLS_SNAKE),
+    Math.floor((snakeH - pad * 2) / ROWS_SNAKE)
+  );
+  snakeArea.cell = Math.max(8, maxCellS);
+  snakeArea.w = snakeArea.cell * COLS_SNAKE;
+  snakeArea.h = snakeArea.cell * ROWS_SNAKE;
+  snakeArea.x = 0;
+  snakeArea.y = Math.floor((snakeH - snakeArea.h) / 2);
+  snakeArea.ox = snakeArea.x;
+  snakeArea.oy = snakeArea.y;
+  snakeArea.cols = COLS_SNAKE;
+  snakeArea.rows = ROWS_SNAKE;
+
+  const rightW = Math.min(160, Math.max(120, Math.floor(W * 0.30)));
+  const availW = W - pad * 3 - rightW;
+  const availH = bottomH - pad * 2;
+  const cellT = Math.max(6, Math.min(
+    Math.floor(availW / COLS_TETRIS),
+    Math.floor(availH / ROWS_TETRIS)
+  ));
+  tetrisArea.cell = cellT;
+  tetrisArea.w = cellT * COLS_TETRIS;
+  tetrisArea.h = cellT * ROWS_TETRIS;
+  tetrisArea.x = pad;
+  tetrisArea.y = snakeH + Math.floor((bottomH - tetrisArea.h) / 2);
+  tetrisArea.ox = tetrisArea.x;
+  tetrisArea.oy = tetrisArea.y;
+
+  const rightX = tetrisArea.x + tetrisArea.w + pad;
+  const rightY = tetrisArea.y;
+  const rightH = tetrisArea.h;
+  const rightWActual = W - rightX - pad;
+
+  tipArea.x = rightX;
+  tipArea.y = rightY;
+  tipArea.w = rightWActual;
+  tipArea.h = Math.floor(rightH * 0.40);
+
+  queueArea.x = rightX;
+  queueArea.y = rightY + tipArea.h;
+  queueArea.w = rightWActual;
+  queueArea.h = rightH - tipArea.h;
+}
+
+// ============================================================
+// HELPERS
+// ============================================================
+function randInt(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+
+function rotateShape(shape, rot) {
+  let s = shape.map(p => [...p]);
+  for (let r = 0; r < rot; r++) {
+    s = s.map(([x, y]) => [y, -x]);
+    const minX = Math.min(...s.map(p => p[0]));
+    const minY = Math.min(...s.map(p => p[1]));
+    s = s.map(([x, y]) => [x - minX, y - minY]);
+  }
+  return s;
+}
+
+function shapeCells(type, rot) {
+  return rotateShape(SHAPES[type], rot);
+}
+
+function occupiedField() {
+  const set = new Set();
+  for (const f of state.food) set.add(f.x + ',' + f.y);
+  for (const p of state.fieldPieces) {
+    for (const c of p.cells) set.add(c.x + ',' + c.y);
+  }
+  for (const s of state.snake) set.add(s.x + ',' + s.y);
+  return set;
+}
+
+function freeCell() {
+  const occ = occupiedField();
+  const free = [];
+  for (let y = 0; y < ROWS_SNAKE; y++) {
+    for (let x = 0; x < COLS_SNAKE; x++) {
+      if (!occ.has(x + ',' + y)) free.push({x, y});
+    }
+  }
+  if (!free.length) return null;
+  return free[randInt(0, free.length - 1)];
+}
+
+function spawnFood() {
+  if (!state.settingsFoodEnabled) return;
+  const FOOD_COUNT = 3;
+  while (state.food.length < FOOD_COUNT) {
+    const c = freeCell();
+    if (!c) break;
+    state.food.push(c);
+  }
+}
+
+function spawnFieldPiece() {
+  const types = PIECE_TYPES;
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const type = types[randInt(0, types.length - 1)];
+    const rot = randInt(0, 3);
+    const shape = shapeCells(type, rot);
+    const maxX = Math.max(...shape.map(p => p[0]));
+    const maxY = Math.max(...shape.map(p => p[1]));
+    const ox = randInt(0, COLS_SNAKE - 1 - maxX);
+    const oy = randInt(0, ROWS_SNAKE - 1 - maxY);
+    const cells = shape.map(([x, y]) => ({x: ox + x, y: oy + y}));
+    const occ = occupiedField();
+    if (cells.every(c => !occ.has(c.x + ',' + c.y))) {
+      state.fieldPieces.push({type, rot, cells});
+      return true;
+    }
+  }
+  return false;
+}
+
+function ensureFieldPieces() {
+  while (state.fieldPieces.length < PIECES_ON_FIELD) {
+    if (!spawnFieldPiece()) break;
+  }
+}
+
+// ============================================================
+// PARTICLES
+// ============================================================
+function spawnParticles(cx, cy, color, n = 8) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = 40 + Math.random() * 80;
+    state.particles.push({
+      x: cx, y: cy,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp,
+      life: 0.35 + Math.random() * 0.25,
+      maxLife: 0.6,
+      r: 2 + Math.random() * 3,
+      color
+    });
+  }
+}
+
+function updateParticles(dt) {
+  for (let i = state.particles.length - 1; i >= 0; i--) {
+    const p = state.particles[i];
+    p.life -= dt;
+    if (p.life <= 0) {
+      state.particles.splice(i, 1);
+      continue;
+    }
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vx *= 0.92;
+    p.vy *= 0.92;
+  }
+}
+
+// ============================================================
+// SNAKE
+// ============================================================
+function initSnake() {
+  const cx = Math.floor(COLS_SNAKE / 2);
+  const cy = Math.floor(ROWS_SNAKE / 2);
+  state.snake = [];
+  for (let i = 0; i < START_SNAKE_LEN; i++) {
+    state.snake.push({x: cx - i, y: cy});
+  }
+  state.dir = {x: 1, y: 0};
+  state.nextDir = {x: 1, y: 0};
+  state.snakeMoveTimer = 0;
+  state.snakeMoveInterval = state.settingsSnakeSpeed;
+}
+
+function setDir(dx, dy) {
+  if (state.phase !== 'snake' || state.snakePaused) return;
+  if (dx === -state.dir.x && dy === -state.dir.y) return;
+  if (dx === 0 && dy === 0) return;
+  state.nextDir = {x: dx, y: dy};
+}
+
+function moveSnake() {
+  if (state.phase !== 'snake' || state.snakePaused) return;
+  state.dir = {...state.nextDir};
+  const head = state.snake[0];
+  let nx = head.x + state.dir.x;
+  let ny = head.y + state.dir.y;
+  if (nx < 0) nx = COLS_SNAKE - 1;
+  else if (nx >= COLS_SNAKE) nx = 0;
+  if (ny < 0) ny = ROWS_SNAKE - 1;
+  else if (ny >= ROWS_SNAKE) ny = 0;
+
+  for (let i = 0; i < state.snake.length; i++) {
+    if (state.snake[i].x === nx && state.snake[i].y === ny) {
+      gameOver('Столкновение с собой');
+      return;
+    }
+  }
+
+  state.snake.unshift({x: nx, y: ny});
+
+  let grew = false;
+
+  // Еда
+  if (state.settingsFoodEnabled) {
+    for (let i = 0; i < state.food.length; i++) {
+      if (state.food[i].x === nx && state.food[i].y === ny) {
+        state.food.splice(i, 1);
+        grew = true;
+        const cell = snakeArea.cell;
+        spawnParticles(
+          snakeArea.ox + (nx + 0.5) * cell,
+          snakeArea.oy + (ny + 0.5) * cell,
+          COLORS.food, 10
+        );
+        spawnFood();
+        break;
+      }
+    }
+  }
+
+  // Фигура
+  let atePiece = null;
+  for (let i = 0; i < state.fieldPieces.length; i++) {
+    const p = state.fieldPieces[i];
+    if (p.cells.some(c => c.x === nx && c.y === ny)) {
+      atePiece = p;
+      state.fieldPieces.splice(i, 1);
+      break;
+    }
+  }
+
+  if (atePiece) {
+    const cell = snakeArea.cell;
+    const color = PIECE_COLORS[atePiece.type] || COLORS.cyan;
+    for (const c of atePiece.cells) {
+      spawnParticles(
+        snakeArea.ox + (c.x + 0.5) * cell,
+        snakeArea.oy + (c.y + 0.5) * cell,
+        color, 6
+      );
+    }
+    
+    const growAmount = state.settingsHardMode ? atePiece.cells.length : GROW_PER_PIECE_NORMAL;
+    for (let g = 0; g < growAmount; g++) {
+      state.snake.push({...state.snake[state.snake.length - 1]});
+    }
+    grew = true;
+    
+    state.queue.push(atePiece.type);
+    state.score += 10;
+    ensureFieldPieces();
+    if (state.queue.length >= state.settingsQueueSize) {
+      startTetrisPhase();
+    }
+  }
+
+  // Если не росли — удаляем хвост
+  if (!grew) {
+    state.snake.pop();
+  }
+}
+
+function shrinkSnake(n) {
+  const shrinkAmount = state.settingsHardMode ? n : SHRINK_PER_LINE_NORMAL;
+  const target = Math.max(START_SNAKE_LEN, state.snake.length - shrinkAmount);
+  while (state.snake.length > target) {
+    state.snake.pop();
+  }
+}
+
+// ============================================================
+// TETRIS
+// ============================================================
+function emptyGrid() {
+  return Array.from({length: ROWS_TETRIS}, () => Array(COLS_TETRIS).fill(null));
+}
+
+function startTetrisPhase() {
+  state.phase = 'tetris';
+  state.snakePaused = true;
+  if (!state.tetrisGrid) state.tetrisGrid = emptyGrid();
+  state.tetrisTimer = TETRIS_TIME;
+  state.currentPiece = null;
+  nextTetrisPiece();
+  state.flash = 0.4;
+}
+
+function nextTetrisPiece() {
+  if (state.queue.length === 0) {
+    endTetrisPhase(false);
+    return;
+  }
+  const type = state.queue.shift();
+  state.currentPiece = type;
+  state.currentRot = 0;
+  const shape = shapeCells(type, 0);
+  const maxX = Math.max(...shape.map(p => p[0]));
+  state.currentX = Math.floor((COLS_TETRIS - maxX - 1) / 2);
+  state.currentY = 0;
+
+  if (!canPlace(type, 0, state.currentX, state.currentY)) {
+    gameOver('Тетрис-поле переполнено');
+    state.currentPiece = null;
+  }
+}
+
+function canPlace(type, rot, ox, oy) {
+  const shape = shapeCells(type, rot);
+  for (const [x, y] of shape) {
+    const px = ox + x;
+    const py = oy + y;
+    if (px < 0 || px >= COLS_TETRIS || py < 0 || py >= ROWS_TETRIS) return false;
+    if (state.tetrisGrid[py][px]) return false;
+  }
+  return true;
+}
+
+function getGhostY() {
+  if (!state.currentPiece) return 0;
+  let y = state.currentY;
+  while (canPlace(state.currentPiece, state.currentRot, state.currentX, y + 1)) {
+    y++;
+  }
+  return y;
+}
+
+function hardDrop() {
+  if (!state.currentPiece || state.phase !== 'tetris') return;
+  state.currentY = getGhostY();
+  lockPiece();
+}
+
+function lockPiece() {
+  if (!state.currentPiece) return;
+  const shape = shapeCells(state.currentPiece, state.currentRot);
+  const color = PIECE_COLORS[state.currentPiece];
+  for (const [x, y] of shape) {
+    const px = state.currentX + x;
+    const py = state.currentY + y;
+    if (py >= 0 && py < ROWS_TETRIS && px >= 0 && px < COLS_TETRIS) {
+      state.tetrisGrid[py][px] = color;
+    }
+  }
+  const cell = tetrisArea.cell;
+  for (const [x, y] of shape) {
+    spawnParticles(
+      tetrisArea.ox + (state.currentX + x + 0.5) * cell,
+      tetrisArea.oy + (state.currentY + y + 0.5) * cell,
+      color, 4
+    );
+  }
+  clearLines();
+  state.currentPiece = null;
+  nextTetrisPiece();
+}
+
+function clearLines() {
+  let cleared = 0;
+  let y = ROWS_TETRIS - 1;
+  while (y >= 0) {
+    if (state.tetrisGrid[y].every(c => c !== null)) {
+      const cell = tetrisArea.cell;
+      for (let x = 0; x < COLS_TETRIS; x++) {
+        spawnParticles(
+          tetrisArea.ox + (x + 0.5) * cell,
+          tetrisArea.oy + (y + 0.5) * cell,
+          COLORS.white, 5
+        );
+      }
+      state.tetrisGrid.splice(y, 1);
+      state.tetrisGrid.unshift(Array(COLS_TETRIS).fill(null));
+      cleared++;
+    } else {
+      y--;
+    }
+  }
+  if (cleared > 0) {
+    shrinkSnake(cleared);
+    state.score += cleared * 100;
+    state.flash = 0.3;
+  }
+}
+
+function moveTetris(dx) {
+  if (!state.currentPiece || state.phase !== 'tetris') return;
+  if (canPlace(state.currentPiece, state.currentRot, state.currentX + dx, state.currentY)) {
+    state.currentX += dx;
+  }
+}
+
+function rotateTetris() {
+  if (!state.currentPiece || state.phase !== 'tetris') return;
+  const next = (state.currentRot + 1) % 4;
+  const kicks = [0, -1, 1, -2, 2];
+  for (const k of kicks) {
+    if (canPlace(state.currentPiece, next, state.currentX + k, state.currentY)) {
+      state.currentRot = next;
+      state.currentX += k;
+      return;
+    }
+  }
+}
+
+function endTetrisPhase(timeout) {
+  if (timeout) {
+    let missed = state.queue.length;
+    if (state.currentPiece) missed++;
+    state.queue = [];
+    state.currentPiece = null;
+    for (let i = 0; i < missed; i++) {
+      const tail = state.snake[state.snake.length - 1];
+      for (let g = 0; g < GROW_PER_MISSED; g++) {
+        state.snake.push({...tail});
+      }
+    }
+  }
+  state.currentPiece = null;
+  state.snakePaused = true;
+  state.phase = 'countdown';
+  state.countdown = 3;
+  state.countdownTimer = 1.0;
+  state.flash = 0.2;
+  ensureFieldPieces();
+  if (state.settingsFoodEnabled) spawnFood();
+}
+
+function finishCountdown() {
+  state.phase = 'snake';
+  state.snakePaused = false;
+  state.countdown = 0;
+  state.flash = 0.25;
+}
+
+// ============================================================
+// GAME FLOW
+// ============================================================
+function startGame() {
+  state.phase = 'snake';
+  state.snakePaused = false;
+  state.queue = [];
+  state.food = [];
+  state.fieldPieces = [];
+  state.particles = [];
+  state.tetrisGrid = emptyGrid();
+  state.currentPiece = null;
+  state.tetrisTimer = TETRIS_TIME;
+  state.gameOverReason = '';
+  state.score = 0;
+  state.snakeMoveInterval = state.settingsSnakeSpeed;
+  initSnake();
+  ensureFieldPieces();
+  if (state.settingsFoodEnabled) spawnFood();
+  state.flash = 0.3;
+}
+
+function gameOver(reason) {
+  if (state.score > state.highScore) {
+    state.highScore = state.score;
+    try {
+      localStorage.setItem('snakeTrisHighScore', state.highScore);
+    } catch (e) {}
+  }
+  state.phase = 'gameover';
+  state.gameOverReason = reason;
+  state.snakePaused = true;
+  state.currentPiece = null;
+}
+
+// ============================================================
+// INPUT - POINTER EVENTS
+// ============================================================
+let pointerId = null;
+let pointerStart = null;
+let pointerLast = null;
+let isJoystick = false;
+let swipeMoved = false;
+const SWIPE_THRESH = 18;
+const TAP_THRESH = 12;
+
+function getPos(e) {
+  return {x: e.clientX, y: e.clientY};
+}
+
+function onPointerDown(e) {
+  e.preventDefault();
+  if (pointerId !== null) return;
+  pointerId = e.pointerId;
+  pointerStart = getPos(e);
+  pointerLast = pointerStart;
+  swipeMoved = false;
+
+  // Кнопка настроек
+  const btnSize = 36;
+  const btnX = W - btnSize - 8;
+  const btnY = 8;
+  if (pointerStart.x >= btnX && pointerStart.x <= btnX + btnSize &&
+      pointerStart.y >= btnY && pointerStart.y <= btnY + btnSize) {
+    state.settingsOpen = !state.settingsOpen;
+    state.snakePaused = state.settingsOpen;
+    pointerId = null;
+    pointerStart = null;
+    return;
+  }
+
+  // Настройки: тап по полям ввода
+  if (state.settingsOpen) {
+    const setW = Math.min(340, W - 20);
+    const setH = 320;
+    const setX = Math.floor((W - setW) / 2);
+    const setY = Math.floor((H - setH) / 2);
+    
+    const fieldY1 = setY + 75;
+    const fieldY2 = setY + 135;
+    const fieldH = 40;
+    const fieldX = setX + 150;
+    const fieldW = 90;
+
+    if (pointerStart.x >= fieldX && pointerStart.x <= fieldX + fieldW) {
+  if (pointerStart.y >= fieldY1 && pointerStart.y <= fieldY1 + fieldH) {
+    setTimeout(() => {
+      const val = prompt('Введите скорость змейки (10-500):', String(state.settingsSnakeSpeed));
+      if (val !== null) {
+        const num = parseInt(val, 10);
+        if (!isNaN(num) && num >= 10 && num <= 500) {
+          state.settingsSnakeSpeed = num;
+        }
+      }
+    }, 50);
+    pointerId = null;
+    pointerStart = null;
+    return;
+  }
+  if (pointerStart.y >= fieldY2 && pointerStart.y <= fieldY2 + fieldH) {
+    setTimeout(() => {
+      const val = prompt('Введите запас фигур (1-12):', String(state.settingsQueueSize));
+      if (val !== null) {
+        const num = parseInt(val, 10);
+        if (!isNaN(num) && num >= 1 && num <= 12) {
+          state.settingsQueueSize = num;
+        }
+      }
+    }, 50);
+    pointerId = null;
+    pointerStart = null;
+    return;
+  }
+}
+
+    // Переключатель "Еда"
+    const toggleFoodX = setX + setW / 2 - 50;
+    const toggleFoodY = setY + 190;
+    const toggleW = 100;
+    const toggleH = 30;
+    
+    if (pointerStart.x >= toggleFoodX && pointerStart.x <= toggleFoodX + toggleW &&
+        pointerStart.y >= toggleFoodY && pointerStart.y <= toggleFoodY + toggleH) {
+      state.settingsFoodEnabled = !state.settingsFoodEnabled;
+      pointerId = null;
+      pointerStart = null;
+      return;
+    }
+
+    // Переключатель "Сложнее"
+    const toggleHardX = setX + setW / 2 - 50;
+    const toggleHardY = setY + 230;
+    
+    if (pointerStart.x >= toggleHardX && pointerStart.x <= toggleHardX + toggleW &&
+        pointerStart.y >= toggleHardY && pointerStart.y <= toggleHardY + toggleH) {
+      state.settingsHardMode = !state.settingsHardMode;
+      pointerId = null;
+      pointerStart = null;
+      return;
+    }
+
+    // Кнопка "Применить"
+    const applyY = setY + 270;
+    const applyH = 40;
+    const applyX = setX + setW / 2 - 60;
+    const applyW = 120;
+    
+    if (pointerStart.x >= applyX && pointerStart.x <= applyX + applyW &&
+        pointerStart.y >= applyY && pointerStart.y <= applyY + applyH) {
+      const newSpeed = parseInt(settingsInputSpeed.value, 10);
+      const newQueue = parseInt(settingsInputQueue.value, 10);
+      if (newSpeed >= 10 && newSpeed <= 500) {
+        state.settingsSnakeSpeed = newSpeed;
+      }
+      if (newQueue >= 1 && newQueue <= 12) {
+        state.settingsQueueSize = newQueue;
+      }
+      state.settingsOpen = false;
+      state.snakePaused = false;
+      startGame();
+      pointerId = null;
+      pointerStart = null;
+      return;
+    }
+
+    // Тап вне окна — закрыть
+    if (!(pointerStart.x >= setX && pointerStart.x <= setX + setW &&
+        pointerStart.y >= setY && pointerStart.y <= setY + setH)) {
+      state.settingsOpen = false;
+      state.snakePaused = false;
+    }
+  }
+
+  if (state.phase === 'start' || state.phase === 'gameover') {
+    startGame();
+    return;
+  }
+
+  if (state.phase === 'countdown') return;
+
+  if (state.phase === 'snake' && !state.snakePaused) {
+    isJoystick = true;
+    state.joystick = {
+      cx: pointerStart.x,
+      cy: pointerStart.y,
+      kx: pointerStart.x,
+      ky: pointerStart.y,
+      active: true
+    };
+  }
+}
+
+function onPointerMove(e) {
+  if (e.pointerId !== pointerId) return;
+  e.preventDefault();
+  const pos = getPos(e);
+  pointerLast = pos;
+
+  if (isJoystick && state.joystick) {
+    const dx = pos.x - state.joystick.cx;
+    const dy = pos.y - state.joystick.cy;
+    const maxR = 48;
+    const dist = Math.hypot(dx, dy);
+    const scale = dist > maxR ? maxR / dist : 1;
+    state.joystick.kx = state.joystick.cx + dx * scale;
+    state.joystick.ky = state.joystick.cy + dy * scale;
+
+    if (dist > 12) {
+      if (Math.abs(dx) > Math.abs(dy)) {
+        setDir(dx > 0 ? 1 : -1, 0);
+      } else {
+        setDir(0, dy > 0 ? 1 : -1);
+      }
+    }
+  } else if (state.phase === 'tetris' && pointerStart) {
+    const dx = pos.x - pointerStart.x;
+    const dy = pos.y - pointerStart.y;
+    if (Math.abs(dx) > SWIPE_THRESH || Math.abs(dy) > SWIPE_THRESH) {
+      swipeMoved = true;
+    }
+
+    if (!pointerStart._lastMoveX) pointerStart._lastMoveX = pointerStart.x;
+    const totalDx = pos.x - pointerStart._lastMoveX;
+    if (Math.abs(totalDx) >= Math.max(14, tetrisArea.cell * 0.65)) {
+      moveTetris(totalDx > 0 ? 1 : -1);
+      pointerStart._lastMoveX = pos.x;
+    }
+  }
+}
+
+function onPointerUp(e) {
+  if (e.pointerId !== pointerId) return;
+  e.preventDefault();
+  const pos = getPos(e);
+
+  if (isJoystick) {
+    state.joystick = null;
+    isJoystick = false;
+  } else if (state.phase === 'tetris' && pointerStart) {
+    const dx = pos.x - pointerStart.x;
+    const dy = pos.y - pointerStart.y;
+    const dist = Math.hypot(dx, dy);
+
+    if (!swipeMoved && dist < TAP_THRESH) {
+      rotateTetris();
+    } else if (dy > SWIPE_THRESH * 2.2 && Math.abs(dy) > Math.abs(dx) * 1.4) {
+      hardDrop();
+    }
+  }
+
+  pointerId = null;
+  pointerStart = null;
+  pointerLast = null;
+  swipeMoved = false;
+}
+
+function onPointerCancel(e) {
+  if (e.pointerId === pointerId) {
+    state.joystick = null;
+    isJoystick = false;
+    pointerId = null;
+    pointerStart = null;
+  }
+}
+
+canvas.addEventListener('pointerdown', onPointerDown, {passive: false});
+canvas.addEventListener('pointermove', onPointerMove, {passive: false});
+canvas.addEventListener('pointerup', onPointerUp, {passive: false});
+canvas.addEventListener('pointercancel', onPointerCancel, {passive: false});
+
+document.addEventListener('touchmove', e => e.preventDefault(), {passive: false});
+
+// ============================================================
+// DRAWING
+// ============================================================
+function roundRect(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function drawGlossyBlock(x, y, size, color, glow = true) {
+  const r = size * 0.22;
+  if (glow) {
+    ctx.shadowColor = color;
+    ctx.shadowBlur = size * 0.45;
+  }
+  ctx.fillStyle = color;
+  roundRect(x, y, size, size, r);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  const grad = ctx.createLinearGradient(x, y, x, y + size * 0.55);
+  grad.addColorStop(0, 'rgba(255,255,255,0.45)');
+  grad.addColorStop(0.4, 'rgba(255,255,255,0.12)');
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = grad;
+  roundRect(x + size * 0.08, y + size * 0.06, size * 0.84, size * 0.4, r * 0.7);
+  ctx.fill();
+
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  roundRect(x + size * 0.1, y + size * 0.65, size * 0.8, size * 0.25, r * 0.5);
+  ctx.fill();
+}
+
+function drawScore() {
+  const fs = Math.max(14, Math.min(20, W * 0.045));
+  ctx.textAlign = 'left';
+  ctx.font = `bold ${fs}px system-ui`;
+  ctx.fillStyle = COLORS.cyan;
+  ctx.shadowColor = COLORS.cyan;
+  ctx.shadowBlur = 8;
+  ctx.fillText(`Очки: ${state.score}`, 10, fs + 10);
+  ctx.shadowBlur = 0;
+
+  ctx.font = `${fs * 0.7}px system-ui`;
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.fillText(`Рекорд: ${state.highScore}`, 10, fs * 1.8 + 10);
+}
+
+function drawSettingsButton() {
+  const size = 36;
+  const x = W - size - 8;
+  const y = 8;
+  
+  ctx.fillStyle = 'rgba(53,231,255,0.15)';
+  roundRect(x, y, size, size, 6);
+  ctx.fill();
+  ctx.strokeStyle = COLORS.cyan;
+  ctx.lineWidth = 2;
+  roundRect(x, y, size, size, 6);
+  ctx.stroke();
+
+  const cx = x + size / 2;
+  const cy = y + size / 2;
+  const outerR = size * 0.32;
+  const innerR = size * 0.15;
+  const teeth = 6;
+  
+  ctx.fillStyle = COLORS.cyan;
+  ctx.beginPath();
+  for (let i = 0; i < teeth * 2; i++) {
+    const angle = (i / (teeth * 2)) * Math.PI * 2;
+    const r = i % 2 === 0 ? outerR : innerR;
+    const px = cx + Math.cos(angle) * r;
+    const py = cy + Math.sin(angle) * r;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = 'rgba(5,8,10,0.9)';
+  ctx.beginPath();
+  ctx.arc(cx, cy, size * 0.12, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawSettingsPanel() {
+  if (!state.settingsOpen) return;
+
+  const setW = Math.min(340, W - 20);
+  const setH = 320;
+  const setX = Math.floor((W - setW) / 2);
+  const setY = Math.floor((H - setH) / 2);
+
+  ctx.fillStyle = 'rgba(5,8,10,0.95)';
+  roundRect(setX, setY, setW, setH, 12);
+  ctx.fill();
+  ctx.strokeStyle = COLORS.cyan;
+  ctx.lineWidth = 2;
+  roundRect(setX, setY, setW, setH, 12);
+  ctx.stroke();
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COLORS.cyan;
+  ctx.font = `bold 20px system-ui`;
+  ctx.fillText('Настройки', setX + setW / 2, setY + 32);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.font = `15px system-ui`;
+  ctx.textAlign = 'right';
+  ctx.fillText('Скорость (мс):', setX + setW / 2 - 10, setY + 83);
+  ctx.fillText('Запас (фиг.):', setX + setW / 2 - 10, setY + 143);
+
+  const fieldW = 90;
+  const fieldH = 40;
+  const fieldX = setX + setW / 2 + 10;
+  
+  ctx.fillStyle = 'rgba(255,255,255,0.1)';
+  roundRect(fieldX, setY + 63, fieldW, fieldH, 6);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 2;
+  roundRect(fieldX, setY + 63, fieldW, fieldH, 6);
+  ctx.stroke();
+
+  ctx.fillStyle = COLORS.white;
+  ctx.font = `bold 18px system-ui`;
+  ctx.textAlign = 'center';
+  ctx.fillText(String(state.settingsSnakeSpeed), fieldX + fieldW / 2, setY + 90);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.1)';
+  roundRect(fieldX, setY + 123, fieldW, fieldH, 6);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 2;
+  roundRect(fieldX, setY + 123, fieldW, fieldH, 6);
+  ctx.stroke();
+
+  ctx.fillStyle = COLORS.white;
+  ctx.font = `bold 18px system-ui`;
+  ctx.textAlign = 'center';
+  ctx.fillText(String(state.settingsQueueSize), fieldX + fieldW / 2, setY + 150);
+
+  // Переключатель "Еда"
+  const toggleW = 100;
+  const toggleH = 30;
+  const toggleX = setX + setW / 2 - toggleW / 2;
+  
+  ctx.fillStyle = state.settingsFoodEnabled ? COLORS.green : 'rgba(255,255,255,0.15)';
+  roundRect(toggleX, setY + 190, toggleW, toggleH, 15);
+  ctx.fill();
+  ctx.strokeStyle = state.settingsFoodEnabled ? COLORS.green : 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 2;
+  roundRect(toggleX, setY + 190, toggleW, toggleH, 15);
+  ctx.stroke();
+  
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.font = `bold 14px system-ui`;
+  ctx.textAlign = 'center';
+  ctx.fillText('Еда: ' + (state.settingsFoodEnabled ? 'ВКЛ' : 'ВЫКЛ'), toggleX + toggleW / 2, setY + 210);
+
+  // Переключатель "Сложнее"
+  ctx.fillStyle = state.settingsHardMode ? '#ff4d6a' : 'rgba(255,255,255,0.15)';
+  roundRect(toggleX, setY + 230, toggleW, toggleH, 15);
+  ctx.fill();
+  ctx.strokeStyle = state.settingsHardMode ? '#ff4d6a' : 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 2;
+  roundRect(toggleX, setY + 230, toggleW, toggleH, 15);
+  ctx.stroke();
+  
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.font = `bold 14px system-ui`;
+  ctx.textAlign = 'center';
+  ctx.fillText('Сложнее: ' + (state.settingsHardMode ? 'ВКЛ' : 'ВЫКЛ'), toggleX + toggleW / 2, setY + 250);
+
+  // Кнопка "Применить"
+  const applyW = 120;
+  const applyH = 40;
+  const applyX = setX + setW / 2 - applyW / 2;
+  const applyY = setY + 270;
+  
+  ctx.fillStyle = COLORS.cyan;
+  roundRect(applyX, applyY, applyW, applyH, 6);
+  ctx.fill();
+  ctx.fillStyle = '#05080a';
+  ctx.font = `bold 16px system-ui`;
+  ctx.textAlign = 'center';
+  ctx.fillText('Применить', applyX + applyW / 2, applyY + 26);
+
+  ctx.fillStyle = 'rgba(53,231,255,0.7)';
+  ctx.font = `11px system-ui`;
+  ctx.textAlign = 'center';
+  ctx.fillText('10–500 мс | 1–12 фигур', setX + setW / 2, setY + setH - 20);
+}
+
+function drawSnake() {
+  const cell = snakeArea.cell;
+  const ox = snakeArea.ox;
+  const oy = snakeArea.oy;
+  const dim = state.phase === 'tetris' || state.phase === 'countdown' || state.phase === 'gameover';
+
+  for (let i = state.snake.length - 1; i >= 0; i--) {
+    const s = state.snake[i];
+    const x = ox + s.x * cell;
+    const y = oy + s.y * cell;
+    const isHead = i === 0;
+    let color = isHead ? COLORS.greenHead : COLORS.green;
+    if (dim) color = isHead ? '#3a8a60' : '#2d6b4a';
+
+    const pad = cell * 0.06;
+    drawGlossyBlock(x + pad, y + pad, cell - pad * 2, color, !dim && isHead);
+
+    if (isHead && !dim) {
+      const eyeR = cell * 0.12;
+      const ex = cell * 0.28;
+      const ey = cell * 0.28;
+      ctx.fillStyle = '#0a1a12';
+      ctx.beginPath();
+      if (state.dir.x === 1) {
+        ctx.arc(x + cell - ex, y + ey, eyeR, 0, Math.PI * 2);
+        ctx.arc(x + cell - ex, y + cell - ey, eyeR, 0, Math.PI * 2);
+      } else if (state.dir.x === -1) {
+        ctx.arc(x + ex, y + ey, eyeR, 0, Math.PI * 2);
+        ctx.arc(x + ex, y + cell - ey, eyeR, 0, Math.PI * 2);
+      } else if (state.dir.y === 1) {
+        ctx.arc(x + ey, y + cell - ex, eyeR, 0, Math.PI * 2);
+        ctx.arc(x + cell - ey, y + cell - ex, eyeR, 0, Math.PI * 2);
+      } else {
+        ctx.arc(x + ey, y + ex, eyeR, 0, Math.PI * 2);
+        ctx.arc(x + cell - ey, y + ex, eyeR, 0, Math.PI * 2);
+      }
+      ctx.fill();
+      ctx.shadowColor = COLORS.greenHead;
+      ctx.shadowBlur = cell * 0.6;
+      ctx.fillStyle = 'rgba(122,255,184,0.15)';
+      roundRect(x, y, cell, cell, cell * 0.25);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+  }
+}
+
+function drawFood() {
+  if (!state.settingsFoodEnabled) return;
+  const cell = snakeArea.cell;
+  const ox = snakeArea.ox;
+  const oy = snakeArea.oy;
+  for (const f of state.food) {
+    const x = ox + (f.x + 0.5) * cell;
+    const y = oy + (f.y + 0.5) * cell;
+    const r = cell * 0.28;
+    ctx.shadowColor = COLORS.food;
+    ctx.shadowBlur = cell * 0.5;
+    ctx.fillStyle = COLORS.food;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.beginPath();
+    ctx.arc(x - r * 0.3, y - r * 0.3, r * 0.35, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawFieldPieces() {
+  const cell = snakeArea.cell;
+  const ox = snakeArea.ox;
+  const oy = snakeArea.oy;
+  for (const p of state.fieldPieces) {
+    const color = PIECE_COLORS[p.type] || COLORS.cyan;
+    for (const c of p.cells) {
+      const x = ox + c.x * cell;
+      const y = oy + c.y * cell;
+      const pad = cell * 0.05;
+      drawGlossyBlock(x + pad, y + pad, cell - pad * 2, color, true);
+    }
+  }
+}
+
+function drawSnakeGrid() {
+  const cell = snakeArea.cell;
+  const ox = snakeArea.ox;
+  const oy = snakeArea.oy;
+  ctx.strokeStyle = COLORS.grid;
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= COLS_SNAKE; x++) {
+    ctx.beginPath();
+    ctx.moveTo(ox + x * cell, oy);
+    ctx.lineTo(ox + x * cell, oy + ROWS_SNAKE * cell);
+    ctx.stroke();
+  }
+  for (let y = 0; y <= ROWS_SNAKE; y++) {
+    ctx.beginPath();
+    ctx.moveTo(ox, oy + y * cell);
+    ctx.lineTo(ox + COLS_SNAKE * cell, oy + y * cell);
+    ctx.stroke();
+  }
+  ctx.strokeStyle = 'rgba(53,231,255,0.25)';
+  ctx.lineWidth = 2;
+  ctx.shadowColor = COLORS.cyan;
+  ctx.shadowBlur = 8;
+  roundRect(ox - 2, oy - 2, COLS_SNAKE * cell + 4, ROWS_SNAKE * cell + 4, 6);
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+}
+
+function drawTetris() {
+  const cell = tetrisArea.cell;
+  const ox = tetrisArea.ox;
+  const oy = tetrisArea.oy;
+
+  ctx.fillStyle = 'rgba(10,16,20,0.85)';
+  roundRect(ox - 3, oy - 3, COLS_TETRIS * cell + 6, ROWS_TETRIS * cell + 6, 6);
+  ctx.fill();
+
+  ctx.strokeStyle = 'rgba(53,231,255,0.08)';
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= COLS_TETRIS; x++) {
+    ctx.beginPath();
+    ctx.moveTo(ox + x * cell, oy);
+    ctx.lineTo(ox + x * cell, oy + ROWS_TETRIS * cell);
+    ctx.stroke();
+  }
+  for (let y = 0; y <= ROWS_TETRIS; y++) {
+    ctx.beginPath();
+    ctx.moveTo(ox, oy + y * cell);
+    ctx.lineTo(ox + COLS_TETRIS * cell, oy + y * cell);
+    ctx.stroke();
+  }
+
+  ctx.strokeStyle = 'rgba(53,231,255,0.4)';
+  ctx.lineWidth = 2;
+  ctx.shadowColor = COLORS.cyan;
+  ctx.shadowBlur = 10;
+  roundRect(ox - 3, oy - 3, COLS_TETRIS * cell + 6, ROWS_TETRIS * cell + 6, 6);
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  if (state.tetrisGrid) {
+    for (let y = 0; y < ROWS_TETRIS; y++) {
+      for (let x = 0; x < COLS_TETRIS; x++) {
+        const col = state.tetrisGrid[y][x];
+        if (col) {
+          const pad = cell * 0.06;
+          drawGlossyBlock(ox + x * cell + pad, oy + y * cell + pad, cell - pad * 2, col, true);
+        }
+      }
+    }
+  }
+
+  if (state.phase === 'tetris' && state.currentPiece) {
+    const shape = shapeCells(state.currentPiece, state.currentRot);
+    const gy = getGhostY();
+    const color = PIECE_COLORS[state.currentPiece];
+
+    for (const [x, y] of shape) {
+      const px = ox + (state.currentX + x) * cell;
+      const py = oy + (gy + y) * cell;
+      const pad = cell * 0.1;
+      ctx.fillStyle = COLORS.ghost;
+      roundRect(px + pad, py + pad, cell - pad * 2, cell - pad * 2, cell * 0.15);
+      ctx.fill();
+    }
+
+    for (const [x, y] of shape) {
+      const px = ox + (state.currentX + x) * cell;
+      const py = oy + (state.currentY + y) * cell;
+      const pad = cell * 0.06;
+      drawGlossyBlock(px + pad, py + pad, cell - pad * 2, color, true);
+    }
+  }
+}
+
+function drawTips() {
+  const ta = tipArea;
+  if (ta.w < 40 || ta.h < 30) return;
+
+  ctx.fillStyle = 'rgba(10,16,20,0.8)';
+  roundRect(ta.x, ta.y, ta.w, ta.h, 8);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(53,231,255,0.35)';
+  ctx.lineWidth = 1.5;
+  roundRect(ta.x, ta.y, ta.w, ta.h, 8);
+  ctx.stroke();
+
+  const fs = Math.max(9, Math.min(11, ta.w * 0.055));
+  ctx.textAlign = 'left';
+  ctx.font = `bold ${fs + 1}px system-ui`;
+  ctx.fillStyle = COLORS.cyan;
+  
+  if (state.phase === 'snake' || state.phase === 'start' || state.phase === 'gameover' || state.phase === 'countdown') {
+    ctx.fillText('РЕЖИМ ЗМЕЙКИ', ta.x + 8, ta.y + fs + 8);
+    ctx.font = `${fs}px system-ui`;
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    const lines = [
+      `• Собери ${state.settingsQueueSize} фигур`,
+      state.settingsFoodEnabled ? '• Еда: +1 к длине' : '• Еда: выключена',
+      '• Стены проходимы',
+      '• Смерть — только в себя',
+      '',
+      'Управление:',
+      '• Коснись и тяни — джойстик',
+      '• Направление = движение'
+    ];
+    let yy = ta.y + fs * 2.8 + 6;
+    for (const line of lines) {
+      if (yy > ta.y + ta.h - fs) break;
+      if (line === '') {
+        yy += fs * 0.4;
+        continue;
+      }
+      ctx.fillText(line, ta.x + 8, yy);
+      yy += fs * 1.25;
+    }
+  } else if (state.phase === 'tetris') {
+    ctx.fillText('РЕЖИМ ТЕТРИСА', ta.x + 8, ta.y + fs + 8);
+    ctx.font = `${fs}px system-ui`;
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    const lines = [
+      `• Осталось: ${state.queue.length + (state.currentPiece ? 1 : 0)} фиг.`,
+      `• Таймер: ${Math.ceil(state.tetrisTimer)} сек`,
+      '',
+      'Управление:',
+      '• Тап — поворот ↻',
+      '• Свайп ←/→ — движение',
+      '• Свайп ↓ — хард-дроп',
+      '',
+      state.settingsHardMode ? '• Линия = −1 к длине' : '• Линия = −8 к длине'
+    ];
+    let yy = ta.y + fs * 2.8 + 6;
+    for (const line of lines) {
+      if (yy > ta.y + ta.h - fs) break;
+      if (line === '') {
+        yy += fs * 0.4;
+        continue;
+      }
+      ctx.fillText(line, ta.x + 8, yy);
+      yy += fs * 1.25;
+    }
+  }
+}
+
+function drawQueue() {
+  const qa = queueArea;
+  if (qa.w < 50 || qa.h < 40) return;
+
+  ctx.fillStyle = 'rgba(10,16,20,0.7)';
+  roundRect(qa.x, qa.y, qa.w, qa.h, 8);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(53,231,255,0.3)';
+  ctx.lineWidth = 1.5;
+  roundRect(qa.x, qa.y, qa.w, qa.h, 8);
+  ctx.stroke();
+
+  ctx.fillStyle = 'rgba(53,231,255,0.7)';
+  ctx.font = `bold ${Math.max(10, qa.w * 0.08)}px system-ui`;
+  ctx.textAlign = 'center';
+  ctx.fillText(state.phase === 'tetris' ? 'осталось' : 'очередь', qa.x + qa.w / 2, qa.y + 16);
+
+  const piecesToShow = state.phase === 'tetris'
+    ? (state.currentPiece ? [state.currentPiece, ...state.queue] : [...state.queue])
+    : [...state.queue];
+
+  const cols = 3;
+  const rows = Math.ceil(state.settingsQueueSize / cols);
+  const padding = 6;
+  const availW = qa.w - padding * 2;
+  const availH = qa.h - 28;
+  const cellW = Math.floor(availW / cols);
+  const cellH = Math.floor(availH / rows);
+  const miniCell = Math.min(
+    Math.floor((cellW - padding) / 4),
+    Math.floor((cellH - padding) / 3),
+    14
+  );
+
+  for (let i = 0; i < state.settingsQueueSize; i++) {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const bx = qa.x + padding + col * cellW + (cellW - miniCell * 4) / 2;
+    const by = qa.y + 20 + row * cellH + (cellH - miniCell * 3) / 2;
+
+    const type = piecesToShow[i];
+    if (!type) continue;
+    const shape = shapeCells(type, 0);
+    const color = PIECE_COLORS[type];
+    for (const [x, y] of shape) {
+      drawGlossyBlock(bx + x * miniCell, by + y * miniCell, miniCell - 1, color, false);
+    }
+  }
+}
+
+function drawJoystick() {
+  if (!state.joystick || !state.joystick.active) return;
+  const j = state.joystick;
+  const R = 52;
+  const r = 22;
+  ctx.beginPath();
+  ctx.arc(j.cx, j.cy, R, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(53,231,255,0.12)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(53,231,255,0.35)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(j.kx, j.ky, r, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(53,231,255,0.55)';
+  ctx.shadowColor = COLORS.cyan;
+  ctx.shadowBlur = 12;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+function drawParticles() {
+  for (const p of state.particles) {
+    const a = Math.max(0, p.life / p.maxLife);
+    ctx.globalAlpha = a;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r * a, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawTimer() {
+  if (state.phase !== 'tetris') return;
+  const t = Math.ceil(state.tetrisTimer);
+  const cell = tetrisArea.cell;
+  ctx.fillStyle = t <= 5 ? '#ff4d6a' : COLORS.cyan;
+  ctx.font = `bold ${Math.max(14, cell * 0.9)}px system-ui`;
+  ctx.textAlign = 'center';
+  ctx.shadowColor = ctx.fillStyle;
+  ctx.shadowBlur = 8;
+  ctx.fillText(t + 's', tetrisArea.ox + tetrisArea.w / 2, tetrisArea.oy - 8);
+  ctx.shadowBlur = 0;
+}
+
+function drawOverlay() {
+  if (state.phase === 'start') {
+    ctx.fillStyle = 'rgba(5,8,10,0.75)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = COLORS.cyan;
+    ctx.font = `bold ${Math.min(42, W * 0.11)}px system-ui`;
+    ctx.textAlign = 'center';
+    ctx.shadowColor = COLORS.cyan;
+    ctx.shadowBlur = 20;
+    ctx.fillText('SnakeTris', W / 2, H * 0.38);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    ctx.font = `${Math.min(16, W * 0.04)}px system-ui`;
+    ctx.fillText('Собирай фигуры → Тетрис', W / 2, H * 0.46);
+    ctx.fillStyle = COLORS.green;
+    ctx.font = `bold ${Math.min(18, W * 0.045)}px system-ui`;
+    ctx.fillText('Коснись экрана', W / 2, H * 0.56);
+  } else if (state.phase === 'gameover') {
+    ctx.fillStyle = 'rgba(5,8,10,0.85)';
+    ctx.fillRect(0, 0, W, H);
+    
+    ctx.fillStyle = '#ff4d6a';
+    ctx.font = `bold ${Math.min(32, W * 0.09)}px system-ui`;
+    ctx.textAlign = 'center';
+    ctx.shadowColor = '#ff4d6a';
+    ctx.shadowBlur = 16;
+    ctx.fillText('ИГРА ОКОНЧЕНА', W / 2, H * 0.32);
+    ctx.shadowBlur = 0;
+    
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.font = `${Math.min(18, W * 0.05)}px system-ui`;
+    ctx.fillText(`Очки: ${state.score}`, W / 2, H * 0.42);
+    
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.font = `${Math.min(15, W * 0.04)}px system-ui`;
+    ctx.fillText(`Скорость: ${state.settingsSnakeSpeed} мс`, W / 2, H * 0.49);
+    ctx.fillText(`Запас: ${state.settingsQueueSize} фиг.`, W / 2, H * 0.55);
+    
+    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    ctx.font = `${Math.min(14, W * 0.038)}px system-ui`;
+    ctx.fillText(state.gameOverReason, W / 2, H * 0.63);
+    
+    ctx.fillStyle = COLORS.cyan;
+    ctx.font = `bold ${Math.min(17, W * 0.045)}px system-ui`;
+    ctx.fillText('Коснись экрана, чтобы начать заново', W / 2, H * 0.72);
+  } else if (state.phase === 'countdown') {
+    ctx.fillStyle = 'rgba(5,8,10,0.45)';
+    ctx.fillRect(0, 0, W, H * 0.58);
+    const n = state.countdown;
+    ctx.fillStyle = COLORS.cyan;
+    ctx.font = `bold ${Math.min(96, W * 0.28)}px system-ui`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.shadowColor = COLORS.cyan;
+    ctx.shadowBlur = 28;
+    ctx.fillText(String(n), W / 2, H * 0.28);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.font = `${Math.min(16, W * 0.04)}px system-ui`;
+    ctx.fillText('Змейка через…', W / 2, H * 0.42);
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  if (state.flash > 0) {
+    ctx.fillStyle = `rgba(53,231,255,${state.flash * 0.25})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+}
+
+function drawBg() {
+  const g = ctx.createRadialGradient(W * 0.5, H * 0.15, 0, W * 0.5, H * 0.4, H * 0.85);
+  g.addColorStop(0, '#0a1a22');
+  g.addColorStop(0.45, '#060e12');
+  g.addColorStop(1, '#030608');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function draw() {
+  drawBg();
+  drawScore();
+  drawSettingsButton();
+  drawSnakeGrid();
+  drawFieldPieces();
+  drawFood();
+  drawSnake();
+  drawTetris();
+  drawTips();
+  drawQueue();
+  drawTimer();
+  drawParticles();
+  drawJoystick();
+  drawOverlay();
+  drawSettingsPanel();
+}
+
+// ============================================================
+// LOOP
+// ============================================================
+function update(dt) {
+  if (state.flash > 0) state.flash = Math.max(0, state.flash - dt * 2.5);
+  updateParticles(dt);
+
+  if (state.phase === 'snake' && !state.snakePaused) {
+    state.snakeMoveTimer += dt * 1000;
+    while (state.snakeMoveTimer >= state.snakeMoveInterval) {
+      state.snakeMoveTimer -= state.snakeMoveInterval;
+      moveSnake();
+      if (state.phase !== 'snake') break;
+    }
+  }
+
+  if (state.phase === 'tetris') {
+    state.tetrisTimer -= dt;
+    if (state.tetrisTimer <= 0) {
+      state.tetrisTimer = 0;
+      endTetrisPhase(true);
+    }
+  }
+
+  if (state.phase === 'countdown') {
+    state.countdownTimer -= dt;
+    if (state.countdownTimer <= 0) {
+      state.countdown--;
+      if (state.countdown <= 0) {
+        finishCountdown();
+      } else {
+        state.countdownTimer = 1.0;
+        state.flash = 0.15;
+      }
+    }
+  }
+}
+
+function loop(ts) {
+  if (!state.lastTime) state.lastTime = ts;
+  let dt = (ts - state.lastTime) / 1000;
+  state.lastTime = ts;
+  if (dt > 0.05) dt = 0.05;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+// ============================================================
+// INIT
+// ============================================================
+try {
+  state.highScore = parseInt(localStorage.getItem('snakeTrisHighScore') || '0', 10);
+} catch (e) {
+  state.highScore = 0;
+}
+
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 100));
+resize();
+state.phase = 'start';
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>
